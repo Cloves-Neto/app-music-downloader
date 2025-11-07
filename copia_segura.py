@@ -2,116 +2,159 @@ import shutil
 import os
 import hashlib
 import time
+from tkinter import filedialog, Tk
 
 # =======================================================
-# 1. CONFIGURAÇÕES - AJUSTE ESTES CAMINHOS
-# =======================================================
-# Substitua pelo caminho da pasta de origem (no seu PC)
-PASTA_ORIGEM = 'C:/Users/cloves.neto/Music/Musicas Baixadas'
-# Substitua pela letra ou caminho do seu pendrive
-PASTA_DESTINO = 'D:'
-# Ajuda pendrives lentos.
-TEMPO_ESPERA = 1.0
-# Limite de quantas vezes tentar copiar um arquivo
-TENTATIVAS_MAXIMAS = 4
+# 1. CONFIGURAÇÕES - SELEÇÃO DE PASTA
 # =======================================================
 
-def calcular_hash_sha256(caminho_arquivo):
-    """Calcula o hash SHA256 do arquivo em blocos."""
-    hash_funcao = hashlib.sha256()
+print("Abrindo janelas para seleção de pastas...")
+
+# Cria uma "janela" raiz invisível
+root = Tk()
+root.withdraw()
+
+# Abre o seletor para a ORIGEM
+print("Por favor, selecione a PASTA DE ORIGEM (de onde copiar)...")
+PASTA_ORIGEM = filedialog.askdirectory(title="Selecione a PASTA DE ORIGEM")
+
+# Abre o seletor para o DESTINO
+print("Por favor, selecione a PASTA DE DESTINO (pendrive)...")
+PASTA_DESTINO = filedialog.askdirectory(title="Selecione a PASTA DE DESTINO")
+
+# Verifica se o usuário cancelou
+if not PASTA_ORIGEM or not PASTA_DESTINO:
+    print("Seleção cancelada. O script não será executado.")
+    exit() # Encerra o script
+
+# Configurações de cópia
+TEMPO_ESPERA = 1.0  # Tempo (em segundos) para o OS finalizar a escrita
+TENTATIVAS_MAXIMAS = 4 # Tentativas de verificação antes de desistir
+# =======================================================
+
+# =======================================================
+# 2. FUNÇÃO DE HASH (Verificação)
+# =======================================================
+def hash_md5(caminho_arquivo):
+    """Calcula o hash MD5 de um arquivo."""
+    hash_obj = hashlib.md5()
     try:
-        with open(caminho_arquivo, 'rb') as f:
-            # Lê o arquivo em blocos de 4KB para otimizar arquivos grandes
-            for bloco in iter(lambda: f.read(4096), b''):
-                hash_funcao.update(bloco)
-        return hash_funcao.hexdigest()
+        with open(caminho_arquivo, "rb") as f:
+            # Lê o arquivo em pedaços para não lotar a memória
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_obj.update(chunk)
+        return hash_obj.hexdigest()
     except Exception as e:
-        # Se houver erro de I/O (entrada/saída), o hash não pode ser calculado.
+        print(f"  [ERRO HASH] Não foi possível ler {caminho_arquivo}: {e}")
         return None
+# =======================================================
 
-# Loop principal de cópia
+
+# =======================================================
+# 3. LOOP PRINCIPAL DE CÓPIA
+# =======================================================
 print("-" * 50)
-print(f"Iniciando cópia de {PASTA_ORIGEM} para {PASTA_DESTINO}")
-print(f"Máximo de {TENTATIVAS_MAXIMAS} tentativas por arquivo.")
+print(f"Iniciando cópia segura de:")
+print(f"Origem:  {PASTA_ORIGEM}")
+print(f"Destino: {PASTA_DESTINO}")
 print("-" * 50)
 
+arquivos_totais = 0
 arquivos_copiados = 0
-arquivos_falharam_definitivamente = 0
+arquivos_falhados = 0
 
-for nome_arquivo in os.listdir(PASTA_ORIGEM):
-    caminho_origem = os.path.join(PASTA_ORIGEM, nome_arquivo)
-    caminho_destino = os.path.join(PASTA_DESTINO, nome_arquivo)
+# os.walk() "anda" por todas as pastas e subpastas
+for dirpath, dirnames, filenames in os.walk(PASTA_ORIGEM):
 
-    # Pula diretórios e links simbólicos, foca apenas em arquivos
-    if not os.path.isfile(caminho_origem):
-        continue
+    # 1. Calcula o caminho relativo (ex: "Musicas/Rock")
+    # Isso é crucial para replicar a estrutura de pastas no destino
+    caminho_relativo = os.path.relpath(dirpath, PASTA_ORIGEM)
 
-    print(f"\n[Arquivo] Tentando copiar: {nome_arquivo}")
+    # 2. Calcula o caminho de destino completo
+    # Se caminho_relativo for ".", não o adicione
+    if caminho_relativo == ".":
+        pasta_destino_atual = PASTA_DESTINO
+    else:
+        pasta_destino_atual = os.path.join(PASTA_DESTINO, caminho_relativo)
 
-    # Inicia o ciclo de retentativas
-    sucesso = False
-    for tentativa in range(1, TENTATIVAS_MAXIMAS + 1):
-        if sucesso:
-            break
+    # 3. Cria as subpastas no destino, se não existirem
+    if not os.path.exists(pasta_destino_atual):
+        print(f"\n[Criando pasta]: {pasta_destino_atual}")
+        os.makedirs(pasta_destino_atual)
 
-        print(f"    [TENTATIVA {tentativa}/{TENTATIVAS_MAXIMAS}] Iniciando cópia...")
+    # 4. Itera sobre os arquivos da pasta atual
+    for file in filenames:
+        arquivos_totais += 1
+        caminho_origem = os.path.join(dirpath, file)
+        caminho_destino = os.path.join(pasta_destino_atual, file)
 
-        # Garante que o arquivo corrompido anterior seja removido antes de tentar novamente
-        if os.path.exists(caminho_destino):
-            try:
-                os.remove(caminho_destino)
-            except Exception:
-                # Pode falhar se o arquivo estiver em uso, mas tentamos
-                pass
+        print(f"\nProcessando: {file}")
 
-        # 1. Tenta copiar o arquivo
         try:
-            shutil.copy2(caminho_origem, caminho_destino)
-            print("    Cópia física concluída. Verificando integridade...")
+            # --- CÁLCULO DO HASH DE ORIGEM ---
+            print("  Calculando hash de origem...")
+            hash_origem = hash_md5(caminho_origem)
+            if not hash_origem:
+                arquivos_falhados += 1
+                continue # Pula para o próximo arquivo se não conseguiu ler
 
-            # 2. Calcula os hashes
-            hash_origem = calcular_hash_sha256(caminho_origem)
-            hash_destino = calcular_hash_sha256(caminho_destino)
+            # --- VERIFICA SE JÁ EXISTE NO DESTINO (E BATE O HASH) ---
+            if os.path.exists(caminho_destino):
+                print("  Arquivo já existe no destino. Verificando...")
+                hash_destino_existente = hash_md5(caminho_destino)
 
-            # 3. Verifica a integridade
-            if hash_origem and hash_destino and hash_origem == hash_destino:
-                print(f"    ✅ SUCESSO na Tentativa {tentativa}! Hash verificado (integridade OK).")
-                arquivos_copiados += 1
-                sucesso = True
-            else:
-                print(f"    ❌ FALHA na Tentativa {tentativa}: Arquivos são diferentes (corrompido).")
-                if tentativa < TENTATIVAS_MAXIMAS:
-                    print(f"    Re-tentando em {TEMPO_ESPERA} segundos...")
+                if hash_origem == hash_destino_existente:
+                    print("  [OK] Hashes idênticos. Pulando cópia.")
+                    arquivos_copiados += 1 # Conta como "copiado" (pois está correto)
+                    continue # Pula para o próximo arquivo
                 else:
-                    print("    Máximo de tentativas alcançado.")
+                    print("  [AVISO] Hashes diferentes. O arquivo será sobrescrito.")
+
+            # --- CÓPIA ---
+            print(f"  Copiando para {pasta_destino_atual}...")
+            shutil.copy2(caminho_origem, caminho_destino) # copy2 preserva metadados
+
+            # --- VERIFICAÇÃO PÓS-CÓPIA ---
+            print("  Verificando integridade...")
+
+            tentativa = 0
+            hash_destino = None
+
+            # Tenta verificar o hash algumas vezes
+            while tentativa < TENTATIVAS_MAXIMAS:
+                # Espera para o sistema operacional "soltar" o arquivo
+                time.sleep(TEMPO_ESPERA)
+
+                hash_destino = hash_md5(caminho_destino)
+                if hash_destino: # Se conseguiu ler o hash
+                    break
+
+                tentativa += 1
+                print(f"  Falha ao ler hash do destino. Tentando novamente ({tentativa}/{TENTATIVAS_MAXIMAS})...")
+
+            # --- COMPARAÇÃO FINAL ---
+            if hash_origem == hash_destino:
+                print("  [SUCESSO] Verificado! Os hashes são idênticos.")
+                arquivos_copiados += 1
+            else:
+                print(f"  [ERRO FATAL] Os hashes NÃO BATEM após a cópia!")
+                print(f"  Origem:  {hash_origem}")
+                print(f"  Destino: {hash_destino}")
+                arquivos_falhados += 1
 
         except Exception as e:
-            print(f"    [ERRO CRÍTICO] Falha na cópia: {e}")
-            if tentativa < TENTATIVAS_MAXIMAS:
-                print(f"    Re-tentando em {TEMPO_ESPERA} segundos...")
-            else:
-                print("    Máximo de tentativas alcançado.")
+            print(f"  [ERRO INESPERADO] ao processar {file}: {e}")
+            arquivos_falhados += 1
 
-        # Pausa antes da próxima tentativa (ou da próxima cópia)
-        if not sucesso:
-             time.sleep(TEMPO_ESPERA)
+# =======================================================
+# 4. RELATÓRIO FINAL
+# =======================================================
+print("\n" + "=" * 50)
+print("CÓPIA CONCLUÍDA")
+print(f"Arquivos totais na origem: {arquivos_totais}")
+print(f"Arquivos verificados/copiados: {arquivos_copiados}")
+print(f"Arquivos com falha: {arquivos_falhados}")
+print("=" * 50)
 
-    if not sucesso:
-        print(f"ATENÇÃO: Arquivo {nome_arquivo} FALHOU após {TENTATIVAS_MAXIMAS} tentativas.")
-        arquivos_falharam_definitivamente += 1
-
-        # --- NOVIDADE: LIMPEZA FINAL ---
-        if os.path.exists(caminho_destino):
-            try:
-                os.remove(caminho_destino)
-                print(f"    🗑️ Arquivo corrompido ({nome_arquivo}) REMOVIDO do pendrive.")
-            except Exception as e:
-                print(f"    [ERRO DE LIMPEZA] Não foi possível remover o arquivo corrompido: {e}")
-        # -------------------------------
-
-
-print("-" * 50)
-print("Processo de cópia e verificação concluído.")
-print(f"Total de arquivos copiados e verificados com sucesso: {arquivos_copiados}")
-print(f"Total de arquivos que FALHARAM definitivamente e foram limpos: {arquivos_falharam_definitivamente}")
-print("-" * 50)
+# Pausa final para o usuário ler o resultado
+input("Pressione Enter para fechar...")
